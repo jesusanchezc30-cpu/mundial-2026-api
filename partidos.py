@@ -5,7 +5,7 @@ from fastapi import APIRouter, HTTPException
 from datetime import date, timedelta
 import httpx
 from database import get_conn
-from cache import cache, TTL_PARTIDOS_HOY, TTL_PARTIDOS_PROXIMOS
+from cache import cache, TTL_PARTIDOS_HOY, TTL_PARTIDOS_PROXIMOS, TTL_GRUPOS
 
 router = APIRouter(prefix="/partidos", tags=["partidos"])
 
@@ -20,6 +20,7 @@ SQL_PARTIDO = """
     SELECT
         p.id,
         p.fecha,
+        p.fecha_espana,
         p.hora_local::text        AS hora_local,
         p.hora_espana::text       AS hora_espana,
         sl.nombre                 AS local,
@@ -49,7 +50,9 @@ async def partidos_hoy():
     if cached:
         return cached
     async with get_conn() as conn:
-        rows = await conn.fetch(SQL_PARTIDO + " AND p.fecha = $1 ORDER BY p.hora_local", hoy)
+        rows = await conn.fetch(
+            SQL_PARTIDO + " AND p.fecha_espana = $1 ORDER BY p.hora_espana", hoy
+        )
     result = [dict(r) for r in rows]
     cache.set(key, result, TTL_PARTIDOS_HOY)
     return result
@@ -64,7 +67,7 @@ async def partidos_proximos(dias: int = 7):
         return cached
     async with get_conn() as conn:
         rows = await conn.fetch(
-            SQL_PARTIDO + " AND p.fecha BETWEEN $1 AND $2 ORDER BY p.fecha, p.hora_local",
+            SQL_PARTIDO + " AND p.fecha_espana BETWEEN $1 AND $2 ORDER BY p.fecha_espana, p.hora_espana",
             hoy, hasta
         )
     result = [dict(r) for r in rows]
@@ -82,7 +85,9 @@ async def partidos_por_fecha(fecha_str: str):
     if cached:
         return cached
     async with get_conn() as conn:
-        rows = await conn.fetch(SQL_PARTIDO + " AND p.fecha = $1 ORDER BY p.hora_local", fecha)
+        rows = await conn.fetch(
+            SQL_PARTIDO + " AND p.fecha_espana = $1 ORDER BY p.hora_espana", fecha
+        )
     result = [dict(r) for r in rows]
     cache.set(key, result, TTL_PARTIDOS_PROXIMOS)
     return result
@@ -96,7 +101,7 @@ async def partidos_grupo(letra: str):
         return cached
     async with get_conn() as conn:
         rows = await conn.fetch(
-            SQL_PARTIDO + " AND p.grupo = $1 ORDER BY p.fecha, p.hora_local", letra
+            SQL_PARTIDO + " AND p.grupo = $1 ORDER BY p.fecha_espana, p.hora_espana", letra
         )
     if not rows:
         raise HTTPException(404, f"Grupo {letra} no encontrado")
@@ -106,7 +111,6 @@ async def partidos_grupo(letra: str):
 
 @router.get("/{partido_id}/live")
 async def partido_live(partido_id: int):
-    """Score en vivo desde Sofascore (sin cache — siempre fresco)."""
     async with get_conn() as conn:
         row = await conn.fetchrow(
             "SELECT sofascore_id FROM partidos WHERE id = $1", partido_id

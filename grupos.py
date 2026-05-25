@@ -1,44 +1,17 @@
 """
-routers/grupos.py - Clasificacion de grupos
+grupos.py - Clasificacion de grupos
 """
 from fastapi import APIRouter, HTTPException
 from database import get_conn
+from cache import cache, TTL_GRUPOS
 
 router = APIRouter(prefix="/grupos", tags=["grupos"])
 
-SQL_CLASIFICACION = """
-    SELECT
-        p.grupo,
-        sl.nombre        AS seleccion,
-        sl.codigo_fifa,
-        COUNT(*)                                          AS pj,
-        SUM(CASE WHEN p.goles_local > p.goles_visitante  AND p.seleccion_local_id    = sl.id THEN 1
-                 WHEN p.goles_visitante > p.goles_local  AND p.seleccion_visitante_id = sl.id THEN 1
-                 ELSE 0 END)                              AS pg,
-        SUM(CASE WHEN p.goles_local = p.goles_visitante  AND p.goles_local IS NOT NULL THEN 1 ELSE 0 END) AS pe,
-        SUM(CASE WHEN p.goles_local < p.goles_visitante  AND p.seleccion_local_id    = sl.id THEN 1
-                 WHEN p.goles_visitante < p.goles_local  AND p.seleccion_visitante_id = sl.id THEN 1
-                 ELSE 0 END)                              AS pp,
-        SUM(CASE WHEN p.seleccion_local_id    = sl.id THEN COALESCE(p.goles_local, 0)
-                 WHEN p.seleccion_visitante_id = sl.id THEN COALESCE(p.goles_visitante, 0)
-                 ELSE 0 END)                              AS gf,
-        SUM(CASE WHEN p.seleccion_local_id    = sl.id THEN COALESCE(p.goles_visitante, 0)
-                 WHEN p.seleccion_visitante_id = sl.id THEN COALESCE(p.goles_local, 0)
-                 ELSE 0 END)                              AS gc
-    FROM partidos p
-    JOIN torneos t ON t.id = p.torneo_id
-    JOIN selecciones sl ON sl.id IN (p.seleccion_local_id, p.seleccion_visitante_id)
-    WHERE t.anyo = 2026
-      AND p.grupo IS NOT NULL
-      AND p.grupo != ''
-      AND p.estado = 'finalizado'
-    GROUP BY p.grupo, sl.id, sl.nombre, sl.codigo_fifa
-    ORDER BY p.grupo, pts DESC, dg DESC, gf DESC
-"""
-
 @router.get("/")
 async def todos_los_grupos():
-    """Clasificacion de todos los grupos."""
+    cached = cache.get("grupos:lista")
+    if cached:
+        return cached
     async with get_conn() as conn:
         rows = await conn.fetch("""
             SELECT DISTINCT grupo FROM partidos
@@ -47,8 +20,6 @@ async def todos_los_grupos():
             ORDER BY grupo
         """)
         grupos = [r["grupo"] for r in rows]
-
-        # Devuelve selecciones por grupo aunque no haya partidos jugados
         result = {}
         for g in grupos:
             sels = await conn.fetch("""
@@ -60,14 +31,18 @@ async def todos_los_grupos():
                 ORDER BY sl.nombre
             """, g)
             result[g] = [dict(s) for s in sels]
+    cache.set("grupos:lista", result, TTL_GRUPOS)
     return result
 
 @router.get("/{letra}")
 async def clasificacion_grupo(letra: str):
-    """Clasificacion de un grupo con partidos jugados y pendientes."""
     letra = letra.upper()
+    key = f"grupo:{letra}"
+    cached = cache.get(key)
+    if cached:
+        return cached
+
     async with get_conn() as conn:
-        # Selecciones del grupo
         selecciones = await conn.fetch("""
             SELECT DISTINCT sl.id, sl.nombre, sl.codigo_fifa
             FROM partidos p
@@ -80,21 +55,21 @@ async def clasificacion_grupo(letra: str):
         if not selecciones:
             raise HTTPException(404, f"Grupo {letra} no encontrado")
 
-        # Partidos del grupo
         partidos = await conn.fetch("""
-            SELECT p.id, p.fecha, p.hora_espana::text AS hora_espana,
+            SELECT p.id, p.fecha, p.fecha_espana, p.hora_espana::text AS hora_espana,
                    sl.nombre AS local, sv.nombre AS visitante,
                    p.goles_local, p.goles_visitante, p.estado,
-                   p.seleccion_local_id, p.seleccion_visitante_id
+                   p.seleccion_local_id, p.seleccion_visitante_id,
+                   e.nombre AS estadio, e.ciudad
             FROM partidos p
             JOIN torneos t ON t.id = p.torneo_id
             LEFT JOIN selecciones sl ON sl.id = p.seleccion_local_id
             LEFT JOIN selecciones sv ON sv.id = p.seleccion_visitante_id
+            LEFT JOIN estadios e ON e.id = p.estadio_id
             WHERE t.anyo = 2026 AND p.grupo = $1
-            ORDER BY p.fecha, p.hora_local
+            ORDER BY p.fecha_espana, p.hora_espana
         """, letra)
 
-    # Calcular clasificacion
     tabla = {}
     for s in selecciones:
         tabla[s["id"]] = {
@@ -111,7 +86,6 @@ async def clasificacion_grupo(letra: str):
         vid = p["seleccion_visitante_id"]
         gl = p["goles_local"]
         gv = p["goles_visitante"]
-
         for sid, gf, gc in [(lid, gl, gv), (vid, gv, gl)]:
             if sid not in tabla:
                 continue
@@ -128,15 +102,14 @@ async def clasificacion_grupo(letra: str):
             else:
                 tabla[sid]["pp"] += 1
 
-    clasificacion = sorted(
-        tabla.values(),
-        key=lambda x: (-x["pts"], -x["dg"], -x["gf"])
-    )
+    clasificacion = sorted(tabla.values(), key=lambda x: (-x["pts"], -x["dg"], -x["gf"]))
     for i, s in enumerate(clasificacion):
         s["pos"] = i + 1
 
-    return {
+    result = {
         "grupo": letra,
         "clasificacion": clasificacion,
         "partidos": [dict(p) for p in partidos]
     }
+    cache.set(key, result, TTL_GRUPOS)
+    return result
