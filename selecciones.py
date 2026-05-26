@@ -14,13 +14,13 @@ async def lista_selecciones():
         return cached
     async with get_conn() as conn:
         rows = await conn.fetch("""
-            SELECT s.id, s.nombre, s.codigo_fifa, s.confederacion, s.grupo
+            SELECT DISTINCT s.id, s.nombre, s.codigo_fifa, s.confederacion,
+                   p.grupo
             FROM selecciones s
             JOIN partidos p ON p.seleccion_local_id = s.id OR p.seleccion_visitante_id = s.id
             JOIN torneos t ON t.id = p.torneo_id
-            WHERE t.anyo = 2026
-            GROUP BY s.id, s.nombre, s.codigo_fifa, s.confederacion, s.grupo
-            ORDER BY s.grupo, s.nombre
+            WHERE t.anyo = 2026 AND p.grupo IS NOT NULL
+            ORDER BY p.grupo, s.nombre
         """)
     result = [dict(r) for r in rows]
     cache.set("selecciones:lista", result, TTL_SELECCIONES)
@@ -40,6 +40,16 @@ async def detalle_seleccion(sel_id: int):
         if not sel:
             raise HTTPException(404, "Selección no encontrada")
 
+        # Grupo en el Mundial 2026
+        grupo_row = await conn.fetchrow("""
+            SELECT p.grupo FROM partidos p
+            JOIN torneos t ON t.id = p.torneo_id
+            WHERE (p.seleccion_local_id = $1 OR p.seleccion_visitante_id = $1)
+            AND t.anyo = 2026 AND p.grupo IS NOT NULL
+            LIMIT 1
+        """, sel_id)
+        grupo = grupo_row['grupo'] if grupo_row else None
+
         # Participaciones en mundiales
         participaciones = await conn.fetch("""
             SELECT DISTINCT t.anyo, t.pais_sede
@@ -50,17 +60,15 @@ async def detalle_seleccion(sel_id: int):
             ORDER BY t.anyo DESC
         """, sel_id)
 
-        # Todos los partidos históricos
+        # Todos los partidos históricos con resultados
         partidos = await conn.fetch("""
             SELECT p.goles_local, p.goles_visitante,
                    p.seleccion_local_id, p.seleccion_visitante_id,
-                   sv.nombre AS rival_nombre,
                    sl.nombre AS local_nombre,
-                   f.nombre AS fase,
+                   sv.nombre AS visitante_nombre,
                    t.anyo
             FROM partidos p
             JOIN torneos t ON t.id = p.torneo_id
-            JOIN fases f ON f.id = p.fase_id
             LEFT JOIN selecciones sl ON sl.id = p.seleccion_local_id
             LEFT JOIN selecciones sv ON sv.id = p.seleccion_visitante_id
             WHERE (p.seleccion_local_id = $1 OR p.seleccion_visitante_id = $1)
@@ -69,27 +77,19 @@ async def detalle_seleccion(sel_id: int):
         """, sel_id)
 
         # Calcular estadísticas
-        stats = {
-            'pj': 0, 'pg': 0, 'pe': 0, 'pp': 0,
-            'gf': 0, 'gc': 0,
-        }
+        stats = {'pj': 0, 'pg': 0, 'pe': 0, 'pp': 0, 'gf': 0, 'gc': 0}
         rivales = {}
         mayor_goleada_dada = None
         mayor_goleada_recibida = None
-        mejor_puesto = None
-        campeonatos = 0
 
         for p in partidos:
             es_local = p['seleccion_local_id'] == sel_id
             gf = p['goles_local'] if es_local else p['goles_visitante']
             gc = p['goles_visitante'] if es_local else p['goles_local']
-            rival = p['sv_nombre'] if es_local else p['local_nombre'] if not es_local else None
-            # Fix: obtener rival correctamente
-            if es_local:
-                rival_id_field = 'seleccion_visitante_id'
-                rival = p['rival_nombre'] if p['seleccion_visitante_id'] != sel_id else p['local_nombre']
-            else:
-                rival = p['local_nombre']
+            rival = p['visitante_nombre'] if es_local else p['local_nombre']
+
+            if not rival or rival == sel['nombre']:
+                continue
 
             stats['pj'] += 1
             stats['gf'] += gf
@@ -102,53 +102,38 @@ async def detalle_seleccion(sel_id: int):
             else:
                 stats['pp'] += 1
 
-            # Rival stats
-            if rival and rival != sel['nombre']:
-                if rival not in rivales:
-                    rivales[rival] = {'pj': 0, 'pg': 0, 'pe': 0, 'pp': 0}
-                rivales[rival]['pj'] += 1
-                if gf > gc:
-                    rivales[rival]['pg'] += 1
-                elif gf == gc:
-                    rivales[rival]['pe'] += 1
-                else:
-                    rivales[rival]['pp'] += 1
+            # Stats por rival
+            if rival not in rivales:
+                rivales[rival] = {'pj': 0, 'pg': 0, 'pe': 0, 'pp': 0}
+            rivales[rival]['pj'] += 1
+            if gf > gc:
+                rivales[rival]['pg'] += 1
+            elif gf == gc:
+                rivales[rival]['pe'] += 1
+            else:
+                rivales[rival]['pp'] += 1
 
             # Mayor goleada dada
-            diff = gf - gc
             if gf > gc:
+                diff = gf - gc
                 if mayor_goleada_dada is None or diff > mayor_goleada_dada['diff']:
-                    mayor_goleada_dada = {
-                        'resultado': f'{gf}-{gc}',
-                        'rival': rival,
-                        'anyo': p['anyo'],
-                        'diff': diff,
-                    }
+                    mayor_goleada_dada = {'resultado': f'{gf}-{gc}', 'rival': rival, 'anyo': p['anyo'], 'diff': diff}
 
             # Mayor goleada recibida
             if gc > gf:
                 diff_rec = gc - gf
                 if mayor_goleada_recibida is None or diff_rec > mayor_goleada_recibida['diff']:
-                    mayor_goleada_recibida = {
-                        'resultado': f'{gc}-{gf}',
-                        'rival': rival,
-                        'anyo': p['anyo'],
-                        'diff': diff_rec,
-                    }
+                    mayor_goleada_recibida = {'resultado': f'{gc}-{gf}', 'rival': rival, 'anyo': p['anyo'], 'diff': diff_rec}
 
-        # Mejor rival (más victorias)
+        # Mejor y peor rival (mínimo 2 partidos)
         mejor_rival = None
         peor_rival = None
-        if rivales:
-            # Necesitamos al menos 2 partidos contra el rival
-            rivales_filtrados = {k: v for k, v in rivales.items() if v['pj'] >= 2}
-            if rivales_filtrados:
-                mejor_rival = max(rivales_filtrados.items(),
-                    key=lambda x: (x[1]['pg'], -x[1]['pp']))[0]
-                peor_rival = max(rivales_filtrados.items(),
-                    key=lambda x: (x[1]['pp'], -x[1]['pg']))[0]
+        rivales_filtrados = {k: v for k, v in rivales.items() if v['pj'] >= 2}
+        if rivales_filtrados:
+            mejor_rival = max(rivales_filtrados.items(), key=lambda x: (x[1]['pg'], -x[1]['pp']))[0]
+            peor_rival = max(rivales_filtrados.items(), key=lambda x: (x[1]['pp'], -x[1]['pg']))[0]
 
-        # Mejor puesto en mundiales (palmares)
+        # Palmarés
         palmares = await conn.fetch("""
             SELECT t.anyo, t.campeon, t.subcampeon, t.tercer_puesto, t.cuarto_puesto
             FROM torneos t
@@ -158,6 +143,10 @@ async def detalle_seleccion(sel_id: int):
         """, sel['nombre'])
 
         palmares_list = []
+        campeonatos = 0
+        mejor_puesto = None
+        puestos_orden = ['🥇 Campeón', '🥈 Subcampeón', '🥉 3er puesto', '4º puesto']
+
         for p in palmares:
             if p['campeon'] == sel['nombre']:
                 palmares_list.append({'anyo': p['anyo'], 'puesto': '🥇 Campeón'})
@@ -169,20 +158,17 @@ async def detalle_seleccion(sel_id: int):
             elif p['cuarto_puesto'] == sel['nombre']:
                 palmares_list.append({'anyo': p['anyo'], 'puesto': '4º puesto'})
 
-        # Mejor puesto
-        puestos_orden = ['🥇 Campeón', '🥈 Subcampeón', '🥉 3er puesto', '4º puesto']
-        if palmares_list:
-            for puesto in puestos_orden:
-                if any(p['puesto'] == puesto for p in palmares_list):
-                    mejor_puesto = puesto
-                    break
+        for puesto in puestos_orden:
+            if any(p['puesto'] == puesto for p in palmares_list):
+                mejor_puesto = puesto
+                break
 
     result = {
         'id': sel['id'],
         'nombre': sel['nombre'],
         'codigo_fifa': sel['codigo_fifa'],
         'confederacion': sel['confederacion'],
-        'grupo': sel['grupo'],
+        'grupo': grupo,
         'participaciones': len(participaciones),
         'ultima_participacion': participaciones[0]['anyo'] if participaciones else None,
         'mejor_puesto': mejor_puesto,
