@@ -40,6 +40,13 @@ app.include_router(estadios.router)
 app.include_router(historico.router)
 app.include_router(clima.router)
 
+from cache import cache
+
+@app.post("/admin/clear-cache")
+async def clear_cache():
+    cache.clear()
+    return {"status": "ok", "message": "Cache limpiada"}
+
 @app.get("/")
 async def root():
     return {
