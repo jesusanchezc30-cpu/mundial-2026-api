@@ -13,21 +13,27 @@ def _orden_fase(nombre: str) -> int:
     # Contenedores ignorados
     if n in ('group stage', 'knockout stage', 'background'):
         return 0
-    # Grupos
+    # Grupos (rango 10-36, una letra = 10+pos_alfabetica)
     if n.startswith('group ') or n.startswith('pool') or n == 'final round':
-        letra = nombre.split(' ')[-1]
-        return 10 + ord(letra[0]) if letra else 10
+        partes = nombre.split(' ')
+        letra = partes[-1] if partes else '1'
+        try:
+            # Grupos numerados (Group 1, Group 2...)
+            return 10 + int(letra)
+        except ValueError:
+            # Grupos por letra (Group A, Group B...)
+            return 10 + (ord(letra[0].upper()) - ord('A')) if letra else 10
     # Rondas previas
-    if 'first round' in n: return 30
-    if 'second round' in n: return 35
-    if 'play-off' in n: return 38
+    if 'first round' in n: return 100
+    if 'second round' in n: return 110
+    if 'play-off' in n: return 115
     # Eliminatorias
-    if 'round of 16' in n or 'octav' in n: return 40
-    if 'quarter' in n: return 50
-    if 'semi' in n: return 60
-    if 'third' in n or 'match for third' in n: return 70
-    if n == 'final': return 80
-    return 99
+    if 'round of 16' in n or 'octav' in n: return 120
+    if 'quarter' in n: return 130
+    if 'semi' in n: return 140
+    if 'third' in n or 'match for third' in n: return 150
+    if n == 'final': return 160
+    return 200
 
 @router.get("/")
 async def lista_mundiales():
