@@ -7,6 +7,28 @@ from cache import cache, TTL_HISTORICO
 
 router = APIRouter(prefix="/historico", tags=["historico"])
 
+def _orden_fase(nombre: str) -> int:
+    """Devuelve un número de orden para ordenar las fases correctamente."""
+    n = nombre.lower()
+    # Contenedores ignorados
+    if n in ('group stage', 'knockout stage', 'background'):
+        return 0
+    # Grupos
+    if n.startswith('group ') or n.startswith('pool') or n == 'final round':
+        letra = nombre.split(' ')[-1]
+        return 10 + ord(letra[0]) if letra else 10
+    # Rondas previas
+    if 'first round' in n: return 30
+    if 'second round' in n: return 35
+    if 'play-off' in n: return 38
+    # Eliminatorias
+    if 'round of 16' in n or 'octav' in n: return 40
+    if 'quarter' in n: return 50
+    if 'semi' in n: return 60
+    if 'third' in n or 'match for third' in n: return 70
+    if n == 'final': return 80
+    return 99
+
 @router.get("/")
 async def lista_mundiales():
     cached = cache.get("historico:lista")
@@ -24,7 +46,6 @@ async def lista_mundiales():
     return result
 
 def _calcular_clasificacion(partidos):
-    """Calcula la clasificación a partir de una lista de partidos de grupo."""
     tabla = {}
     for p in partidos:
         for sel, gf, gc in [
@@ -67,11 +88,19 @@ async def mundial_detalle(anyo: int):
 
         fases = await conn.fetch("""
             SELECT id, nombre, orden FROM fases
-            WHERE torneo_id = $1 ORDER BY orden
+            WHERE torneo_id = $1
         """, torneo['id'])
 
+        # Ordenar fases correctamente
+        fases_ordenadas = sorted(fases, key=lambda f: _orden_fase(f['nombre']))
+
         fases_result = []
-        for fase in fases:
+        for fase in fases_ordenadas:
+            # Saltar contenedores vacíos
+            nombre_lower = fase['nombre'].lower()
+            if nombre_lower in ('group stage', 'knockout stage', 'background'):
+                continue
+
             partidos = await conn.fetch("""
                 SELECT p.id, p.fecha, p.grupo, p.jornada,
                        sl.nombre AS local, sv.nombre AS visitante,
@@ -91,14 +120,15 @@ async def mundial_detalle(anyo: int):
             if not partidos_list:
                 continue
 
+            orden_calculado = _orden_fase(fase['nombre'])
+
             fase_data = {
                 'nombre': fase['nombre'],
-                'orden': fase['orden'],
+                'orden': orden_calculado,
                 'partidos': partidos_list,
             }
 
-            # Calcular clasificación para fases de grupo
-            nombre_lower = fase['nombre'].lower()
+            # Clasificación para fases de grupo
             es_grupo = (
                 'group' in nombre_lower or
                 'pool' in nombre_lower or
