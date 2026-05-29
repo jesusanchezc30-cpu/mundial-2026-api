@@ -163,13 +163,13 @@ async def detalle_seleccion(sel_id: int):
                 mejor_puesto = puesto
                 break
 
-    # Resultado por mundial
+    # Resultado por mundial - basado en la última fase donde aparece
         mundiales_con_resultado = []
         for part in participaciones:
             anyo_part = part['anyo']
             pais_sede = part['pais_sede']
 
-            # Buscar en palmares primero
+            # Buscar en palmares primero (campeon, sub, 3ro, 4to)
             resultado = None
             for p in palmares_list:
                 if p['anyo'] == anyo_part:
@@ -177,25 +177,21 @@ async def detalle_seleccion(sel_id: int):
                     break
 
             if resultado is None:
-                # Buscar último partido donde perdió
-                ultimo_perdido = await conn.fetchrow("""
-                    SELECT f.nombre AS fase, f.orden
+                # Buscar la última fase donde aparece la selección
+                ultima_fase = await conn.fetchrow("""
+                    SELECT f.nombre, f.orden
                     FROM partidos p
                     JOIN torneos t ON t.id = p.torneo_id
                     JOIN fases f ON f.id = p.fase_id
                     WHERE t.anyo = $1
                     AND (p.seleccion_local_id = $2 OR p.seleccion_visitante_id = $2)
                     AND p.goles_local IS NOT NULL
-                    AND (
-                        (p.seleccion_local_id = $2 AND p.goles_local < p.goles_visitante)
-                        OR (p.seleccion_visitante_id = $2 AND p.goles_visitante < p.goles_local)
-                    )
                     ORDER BY f.orden DESC
                     LIMIT 1
                 """, anyo_part, sel_id)
 
-                if ultimo_perdido:
-                    fn = ultimo_perdido['fase'].lower()
+                if ultima_fase:
+                    fn = ultima_fase['nombre'].lower()
                     if 'semi' in fn:
                         resultado = 'Semifinales'
                     elif 'quarter' in fn:
@@ -204,6 +200,10 @@ async def detalle_seleccion(sel_id: int):
                         resultado = 'Octavos de final'
                     elif 'second round' in fn:
                         resultado = '2ª Ronda'
+                    elif 'first round' in fn:
+                        resultado = '1ª Ronda'
+                    elif 'play-off' in fn:
+                        resultado = 'Play-off'
                     else:
                         resultado = 'Fase de grupos'
                 else:
