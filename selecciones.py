@@ -163,6 +163,58 @@ async def detalle_seleccion(sel_id: int):
                 mejor_puesto = puesto
                 break
 
+    # Resultado por mundial
+        mundiales_con_resultado = []
+        for part in participaciones:
+            anyo_part = part['anyo']
+            pais_sede = part['pais_sede']
+
+            # Buscar en palmares primero
+            resultado = None
+            for p in palmares_list:
+                if p['anyo'] == anyo_part:
+                    resultado = p['puesto']
+                    break
+
+            if resultado is None:
+                # Buscar último partido donde perdió
+                ultimo_perdido = await conn.fetchrow("""
+                    SELECT f.nombre AS fase, f.orden
+                    FROM partidos p
+                    JOIN torneos t ON t.id = p.torneo_id
+                    JOIN fases f ON f.id = p.fase_id
+                    WHERE t.anyo = $1
+                    AND (p.seleccion_local_id = $2 OR p.seleccion_visitante_id = $2)
+                    AND p.goles_local IS NOT NULL
+                    AND (
+                        (p.seleccion_local_id = $2 AND p.goles_local < p.goles_visitante)
+                        OR (p.seleccion_visitante_id = $2 AND p.goles_visitante < p.goles_local)
+                    )
+                    ORDER BY f.orden DESC
+                    LIMIT 1
+                """, anyo_part, sel_id)
+
+                if ultimo_perdido:
+                    fn = ultimo_perdido['fase'].lower()
+                    if 'semi' in fn:
+                        resultado = 'Semifinales'
+                    elif 'quarter' in fn:
+                        resultado = 'Cuartos de final'
+                    elif 'round of 16' in fn:
+                        resultado = 'Octavos de final'
+                    elif 'second round' in fn:
+                        resultado = '2ª Ronda'
+                    else:
+                        resultado = 'Fase de grupos'
+                else:
+                    resultado = 'Fase de grupos'
+
+            mundiales_con_resultado.append({
+                'anyo': anyo_part,
+                'pais_sede': pais_sede,
+                'resultado': resultado,
+            })
+
     result = {
         'id': sel['id'],
         'nombre': sel['nombre'],
@@ -179,7 +231,7 @@ async def detalle_seleccion(sel_id: int):
         'peor_rival': peor_rival,
         'mayor_goleada_dada': {k: v for k, v in mayor_goleada_dada.items() if k != 'diff'} if mayor_goleada_dada else None,
         'mayor_goleada_recibida': {k: v for k, v in mayor_goleada_recibida.items() if k != 'diff'} if mayor_goleada_recibida else None,
-        'mundiales': [dict(p) for p in participaciones],
+        'mundiales': mundiales_con_resultado,
     }
     cache.set(key, result, TTL_SELECCIONES)
     return result
