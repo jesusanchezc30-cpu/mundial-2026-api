@@ -109,6 +109,23 @@ async def partidos_grupo(letra: str):
     cache.set(key, result, TTL_GRUPOS)
     return result
 
+@router.get("/seleccion/{sel_id}")
+async def partidos_seleccion(sel_id: int):
+    key = f"partidos:seleccion:{sel_id}"
+    cached = cache.get(key)
+    if cached:
+        return cached
+    async with get_conn() as conn:
+        rows = await conn.fetch(
+            SQL_PARTIDO + """
+            AND (p.seleccion_local_id = $1 OR p.seleccion_visitante_id = $1)
+            ORDER BY p.fecha_espana, p.hora_espana
+            """, sel_id
+        )
+    result = [dict(r) for r in rows]
+    cache.set(key, result, 300)
+    return result
+
 @router.get("/{partido_id}/live")
 async def partido_live(partido_id: int):
     async with get_conn() as conn:
