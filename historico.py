@@ -113,13 +113,14 @@ async def mundial_detalle(anyo: int):
                        p.goles_local, p.goles_visitante,
                        p.hubo_prorroga, p.hubo_penaltis,
                        p.penaltis_local, p.penaltis_visitante,
-                       e.nombre AS estadio, e.ciudad
+                       e.nombre AS estadio, e.ciudad,
+                       p.bracket_pos
                 FROM partidos p
                 LEFT JOIN selecciones sl ON sl.id = p.seleccion_local_id
                 LEFT JOIN selecciones sv ON sv.id = p.seleccion_visitante_id
                 LEFT JOIN estadios e ON e.id = p.estadio_id
                 WHERE p.torneo_id = $1 AND p.fase_id = $2
-                ORDER BY p.fecha, p.id
+                ORDER BY COALESCE(p.bracket_pos, 999), p.fecha, p.id
             """, torneo['id'], fase['id'])
 
             partidos_list = [dict(p) for p in partidos]
