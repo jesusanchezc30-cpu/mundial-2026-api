@@ -118,7 +118,6 @@ async def goleadores():
             SELECT j.nombre, j.goles, j.asistencias, s.nombre AS seleccion
             FROM jugadores j
             JOIN selecciones s ON s.id = j.seleccion_id
-            WHERE j.goles > 0
             ORDER BY j.goles DESC, j.asistencias DESC
             LIMIT 20
         """)
@@ -137,7 +136,6 @@ async def asistentes():
             SELECT j.nombre, j.goles, j.asistencias, s.nombre AS seleccion
             FROM jugadores j
             JOIN selecciones s ON s.id = j.seleccion_id
-            WHERE j.asistencias > 0
             ORDER BY j.asistencias DESC, j.goles DESC
             LIMIT 20
         """)
