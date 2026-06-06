@@ -13,24 +13,13 @@ def _orden_fase(nombre: str, orden_bd: int = 0, anyo: int = 0) -> int:
     n = nombre.lower()
     if n in ('group stage', 'knockout stage', 'background'):
         return 0
-    if anyo in DOBLE_FASE_GRUPOS:
-        if n.startswith('group '):
-            letra = nombre.split(' ')[-1]
-            try:
-                int(letra)
-                return 10 + int(letra)  # 1ª fase grupos: 11-14
-            except ValueError:
-                return 20 + (ord(letra[0].upper()) - ord('A'))  # 2ª fase: 20-21
-        if 'third' in n or 'match for third' in n: return 150
-        if n == 'final': return 160
-        return orden_bd
     if n.startswith('group ') or n.startswith('pool') or n == 'final round':
         partes = nombre.split(' ')
         letra = partes[-1] if partes else '1'
         try:
             return 10 + int(letra)
         except ValueError:
-            return 10 + (ord(letra[0].upper()) - ord('A')) if letra else 10
+            return 20 + (ord(letra[0].upper()) - ord('A')) if letra else 20
     if 'first round' in n: return 100
     if 'second round' in n: return 110
     if 'play-off' in n: return 115
@@ -105,116 +94,59 @@ async def mundial_detalle(anyo: int):
 
         fases_result = []
 
-        if anyo in DOBLE_FASE_GRUPOS:
-            # Agrupar: 1ª fase grupos, 2ª fase grupos, resto
-            primera_fase_partidos = []
-            segunda_fase_partidos = []
-            otras_fases = []
+        for fase in fases_ordenadas:
+            nombre_lower = fase['nombre'].lower()
+            if nombre_lower in ('group stage', 'knockout stage', 'background'):
+                continue
 
-            for fase in fases_ordenadas:
-                nombre_lower = fase['nombre'].lower()
-                if nombre_lower in ('group stage', 'knockout stage', 'background'):
-                    continue
+            partidos = await conn.fetch("""
+                SELECT p.id, p.fecha, p.grupo, p.jornada,
+                       sl.nombre AS local, sv.nombre AS visitante,
+                       p.goles_local, p.goles_visitante,
+                       p.hubo_prorroga, p.hubo_penaltis,
+                       p.penaltis_local, p.penaltis_visitante,
+                       e.nombre AS estadio, e.ciudad, p.bracket_pos
+                FROM partidos p
+                LEFT JOIN selecciones sl ON sl.id = p.seleccion_local_id
+                LEFT JOIN selecciones sv ON sv.id = p.seleccion_visitante_id
+                LEFT JOIN estadios e ON e.id = p.estadio_id
+                WHERE p.torneo_id = $1 AND p.fase_id = $2
+                ORDER BY COALESCE(p.bracket_pos, 999), p.fecha, p.id
+            """, torneo['id'], fase['id'])
 
-                partidos = await conn.fetch("""
-                    SELECT p.id, p.fecha, p.grupo, p.jornada,
-                           sl.nombre AS local, sv.nombre AS visitante,
-                           p.goles_local, p.goles_visitante,
-                           p.hubo_prorroga, p.hubo_penaltis,
-                           p.penaltis_local, p.penaltis_visitante,
-                           e.nombre AS estadio, e.ciudad, p.bracket_pos
-                    FROM partidos p
-                    LEFT JOIN selecciones sl ON sl.id = p.seleccion_local_id
-                    LEFT JOIN selecciones sv ON sv.id = p.seleccion_visitante_id
-                    LEFT JOIN estadios e ON e.id = p.estadio_id
-                    WHERE p.torneo_id = $1 AND p.fase_id = $2
-                    ORDER BY COALESCE(p.bracket_pos, 999), p.fecha, p.id
-                """, torneo['id'], fase['id'])
+            partidos_list = [dict(p) for p in partidos]
+            if not partidos_list:
+                continue
 
-                partidos_list = [dict(p) for p in partidos]
-                if not partidos_list:
-                    continue
+            orden_calculado = _orden_fase(fase['nombre'], fase['orden'], anyo)
 
-                if nombre_lower.startswith('group '):
-                    letra = fase['nombre'].split(' ')[-1]
-                    try:
-                        int(letra)
-                        primera_fase_partidos.extend(partidos_list)
-                    except ValueError:
-                        segunda_fase_partidos.extend(partidos_list)
-                else:
-                    otras_fases.append((fase, partidos_list))
+            # Para 1974/1978 añadir etiqueta de fase contenedora
+            fase_contenedora = None
+            if anyo in DOBLE_FASE_GRUPOS and nombre_lower.startswith('group '):
+                letra = fase['nombre'].split(' ')[-1]
+                try:
+                    int(letra)
+                    fase_contenedora = '1ª Fase de Grupos'
+                except ValueError:
+                    fase_contenedora = '2ª Fase de Grupos'
 
-            # Añadir 1ª fase agrupada
-            if primera_fase_partidos:
-                fases_result.append({
-                    'nombre': '1ª Fase de Grupos',
-                    'orden': 10,
-                    'partidos': primera_fase_partidos,
-                    'clasificacion': _calcular_clasificacion(primera_fase_partidos),
-                })
+            fase_data = {
+                'nombre': fase['nombre'],
+                'orden': orden_calculado,
+                'partidos': partidos_list,
+                'fase_contenedora': fase_contenedora,
+            }
 
-            # Añadir 2ª fase agrupada
-            if segunda_fase_partidos:
-                fases_result.append({
-                    'nombre': '2ª Fase de Grupos',
-                    'orden': 20,
-                    'partidos': segunda_fase_partidos,
-                    'clasificacion': _calcular_clasificacion(segunda_fase_partidos),
-                })
+            es_grupo = (
+                'group' in nombre_lower or
+                'pool' in nombre_lower or
+                nombre_lower == 'final round'
+            ) and 'knockout' not in nombre_lower and 'stage' not in nombre_lower
 
-            # Añadir resto (3er puesto, final) al final
-            for fase, partidos_list in otras_fases:
-                orden_calculado = _orden_fase(fase['nombre'], fase['orden'], anyo)
-                fases_result.append({
-                    'nombre': fase['nombre'],
-                    'orden': orden_calculado,
-                    'partidos': partidos_list,
-                })
+            if es_grupo and len(partidos_list) >= 2:
+                fase_data['clasificacion'] = _calcular_clasificacion(partidos_list)
 
-        else:
-            # Comportamiento normal para otros mundiales
-            for fase in fases_ordenadas:
-                nombre_lower = fase['nombre'].lower()
-                if nombre_lower in ('group stage', 'knockout stage', 'background'):
-                    continue
-
-                partidos = await conn.fetch("""
-                    SELECT p.id, p.fecha, p.grupo, p.jornada,
-                           sl.nombre AS local, sv.nombre AS visitante,
-                           p.goles_local, p.goles_visitante,
-                           p.hubo_prorroga, p.hubo_penaltis,
-                           p.penaltis_local, p.penaltis_visitante,
-                           e.nombre AS estadio, e.ciudad, p.bracket_pos
-                    FROM partidos p
-                    LEFT JOIN selecciones sl ON sl.id = p.seleccion_local_id
-                    LEFT JOIN selecciones sv ON sv.id = p.seleccion_visitante_id
-                    LEFT JOIN estadios e ON e.id = p.estadio_id
-                    WHERE p.torneo_id = $1 AND p.fase_id = $2
-                    ORDER BY COALESCE(p.bracket_pos, 999), p.fecha, p.id
-                """, torneo['id'], fase['id'])
-
-                partidos_list = [dict(p) for p in partidos]
-                if not partidos_list:
-                    continue
-
-                orden_calculado = _orden_fase(fase['nombre'], fase['orden'], anyo)
-                fase_data = {
-                    'nombre': fase['nombre'],
-                    'orden': orden_calculado,
-                    'partidos': partidos_list,
-                }
-
-                es_grupo = (
-                    'group' in nombre_lower or
-                    'pool' in nombre_lower or
-                    nombre_lower == 'final round'
-                ) and 'knockout' not in nombre_lower and 'stage' not in nombre_lower
-
-                if es_grupo and len(partidos_list) >= 2:
-                    fase_data['clasificacion'] = _calcular_clasificacion(partidos_list)
-
-                fases_result.append(fase_data)
+            fases_result.append(fase_data)
 
     result = {
         **dict(torneo),
