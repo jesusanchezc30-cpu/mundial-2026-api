@@ -22,7 +22,7 @@ def _orden_fase(nombre: str, orden_bd: int = 0, anyo: int = 0) -> int:
             return 20 + (ord(letra[0].upper()) - ord('A')) if letra else 20
     if 'first round' in n: return 100
     if 'second round' in n: return 110
-    if 'play-off' in n: return 115
+    if 'play-off' in n: return 18  # Desempate de grupos, va junto a la fase de grupos
     if 'round of 16' in n or 'octav' in n: return 120
     if 'quarter' in n: return 130
     if 'semi' in n: return 140
@@ -140,7 +140,8 @@ async def mundial_detalle(anyo: int):
             es_grupo = (
                 'group' in nombre_lower or
                 'pool' in nombre_lower or
-                nombre_lower == 'final round'
+                nombre_lower == 'final round' or
+                nombre_lower == 'play-off'
             ) and 'knockout' not in nombre_lower and 'stage' not in nombre_lower
 
             if es_grupo and len(partidos_list) >= 2:
