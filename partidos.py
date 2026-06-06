@@ -126,6 +126,38 @@ async def partidos_seleccion(sel_id: int):
     cache.set(key, result, 300)
     return result
 
+@router.get("/{partido_id}/eventos")
+async def partido_eventos(partido_id: int):
+    async with get_conn() as conn:
+        row = await conn.fetchrow(
+            "SELECT sofascore_id FROM partidos WHERE id = $1", partido_id
+        )
+    if not row or not row["sofascore_id"]:
+        return []
+    sofa_id = row["sofascore_id"]
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            resp = await client.get(
+                f"{SOFA_BASE}/{sofa_id}/incidents",
+                headers=SOFA_HEADERS
+            )
+        if resp.status_code != 200:
+            return []
+        incidents = resp.json().get("incidents", [])
+        eventos = []
+        for inc in incidents:
+            if inc.get("incidentType") == "goal":
+                eventos.append({
+                    "jugador": inc.get("player", {}).get("name", ""),
+                    "asistente": inc.get("assist1", {}).get("name", ""),
+                    "minuto": inc.get("time", 0),
+                    "es_local": inc.get("isHome", True),
+                    "tipo": inc.get("incidentClass", "regular"),
+                })
+        return eventos
+    except:
+        return []
+
 @router.get("/{partido_id}/live")
 async def partido_live(partido_id: int):
     async with get_conn() as conn:
