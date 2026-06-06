@@ -67,8 +67,8 @@ async def update_estados():
             SELECT id, sofascore_id, estado
             FROM partidos
             WHERE sofascore_id IS NOT NULL
-            AND fecha_espana >= $1 - INTERVAL '1 day'
-            AND fecha_espana <= $1 + INTERVAL '1 day'
+            AND fecha_espana >= ($1::date - INTERVAL '1 day')::date
+            AND fecha_espana <= ($1::date + INTERVAL '1 day')::date
             AND torneo_id = (SELECT id FROM torneos WHERE anyo = 2026)
         """, hoy)
 
