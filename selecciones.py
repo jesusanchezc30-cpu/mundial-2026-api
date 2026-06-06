@@ -235,3 +235,20 @@ async def detalle_seleccion(sel_id: int):
     }
     cache.set(key, result, TTL_SELECCIONES)
     return result
+
+@router.get("/{sel_id}/jugadores")
+async def jugadores_seleccion(sel_id: int):
+    key = f"jugadores:{sel_id}"
+    cached = cache.get(key)
+    if cached:
+        return cached
+    async with get_conn() as conn:
+        rows = await conn.fetch("""
+            SELECT id, dorsal, posicion, nombre, fecha_nacimiento, club
+            FROM jugadores
+            WHERE seleccion_id = $1
+            ORDER BY dorsal
+        """, sel_id)
+    result = [dict(r) for r in rows]
+    cache.set(key, result, TTL_SELECCIONES)
+    return result
