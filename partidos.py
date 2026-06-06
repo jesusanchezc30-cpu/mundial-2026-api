@@ -33,6 +33,7 @@ SQL_PARTIDO = """
         p.goles_visitante,
         p.estado,
         p.sofascore_id
+        p.tv
     FROM partidos p
     JOIN torneos t   ON t.id = p.torneo_id
     JOIN fases f     ON f.id = p.fase_id
