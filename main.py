@@ -12,6 +12,7 @@ import estadios
 import historico
 import clima
 import httpx
+from datetime import date
 
 SOFA_BASE = "https://www.sofascore.com/api/v1/event"
 SOFA_HEADERS = {
@@ -54,10 +55,73 @@ async def clear_cache():
     cache.clear()
     return {"status": "ok", "message": "Cache limpiada"}
 
+@app.post("/admin/update-estados")
+async def update_estados():
+    """Consulta Sofascore y actualiza estado + marcador de partidos de hoy y ayer"""
+    hoy = date.today()
+    actualizados = 0
+    errores = 0
+
+    async with get_conn() as conn:
+        rows = await conn.fetch("""
+            SELECT id, sofascore_id, estado
+            FROM partidos
+            WHERE sofascore_id IS NOT NULL
+            AND fecha_espana >= $1 - INTERVAL '1 day'
+            AND fecha_espana <= $1 + INTERVAL '1 day'
+            AND torneo_id = (SELECT id FROM torneos WHERE anyo = 2026)
+        """, hoy)
+
+        for row in rows:
+            sofa_id = row['sofascore_id']
+            partido_id = row['id']
+            try:
+                async with httpx.AsyncClient(timeout=5) as client:
+                    resp = await client.get(
+                        f"{SOFA_BASE}/{sofa_id}",
+                        headers=SOFA_HEADERS
+                    )
+                if resp.status_code != 200:
+                    continue
+
+                event = resp.json().get("event", {})
+                status = event.get("status", {})
+                status_type = status.get("type", "")
+                status_desc = status.get("description", "")
+
+                # Mapear estado Sofascore → nuestro estado
+                if status_type == "finished":
+                    nuevo_estado = "finalizado"
+                elif status_type == "inprogress":
+                    nuevo_estado = "en_juego"
+                elif status_type == "notstarted":
+                    nuevo_estado = "pendiente"
+                else:
+                    nuevo_estado = "pendiente"
+
+                # Marcador
+                gl = event.get("homeScore", {}).get("current")
+                gv = event.get("awayScore", {}).get("current")
+
+                await conn.execute("""
+                    UPDATE partidos
+                    SET estado = $1,
+                        goles_local = COALESCE($2, goles_local),
+                        goles_visitante = COALESCE($3, goles_visitante)
+                    WHERE id = $4
+                """, nuevo_estado, gl, gv, partido_id)
+
+                actualizados += 1
+            except Exception:
+                errores += 1
+                continue
+
+    cache.clear()
+    return {"status": "ok", "actualizados": actualizados, "errores": errores}
+
 @app.post("/admin/update-stats")
 async def update_stats():
     async with get_conn() as conn:
-        # Resetear stats antes de recalcular
         await conn.execute("""
             UPDATE jugadores SET goles = 0, asistencias = 0
             WHERE seleccion_id IN (
@@ -170,6 +234,7 @@ async def root():
             "/goleadores",
             "/asistentes",
             "/admin/clear-cache",
+            "/admin/update-estados",
             "/admin/update-stats",
         ]
     }
