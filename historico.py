@@ -7,33 +7,48 @@ from cache import cache, TTL_HISTORICO
 
 router = APIRouter(prefix="/historico", tags=["historico"])
 
-def _orden_fase(nombre: str) -> int:
+# Mundiales con dos fases de grupos (usar orden de BD)
+DOBLE_FASE_GRUPOS = {1974, 1978}
+
+def _orden_fase(nombre: str, orden_bd: int = 0, anyo: int = 0) -> int:
     """Devuelve un número de orden para ordenar las fases correctamente."""
+    # Para mundiales con doble fase de grupos, usar orden de BD directamente
+    if anyo in DOBLE_FASE_GRUPOS:
+        return orden_bd
+
     n = nombre.lower()
-    # Contenedores ignorados
     if n in ('group stage', 'knockout stage', 'background'):
         return 0
-    # Grupos (rango 10-36, una letra = 10+pos_alfabetica)
     if n.startswith('group ') or n.startswith('pool') or n == 'final round':
         partes = nombre.split(' ')
         letra = partes[-1] if partes else '1'
         try:
-            # Grupos numerados (Group 1, Group 2...)
             return 10 + int(letra)
         except ValueError:
-            # Grupos por letra (Group A, Group B...)
             return 10 + (ord(letra[0].upper()) - ord('A')) if letra else 10
-    # Rondas previas
     if 'first round' in n: return 100
     if 'second round' in n: return 110
     if 'play-off' in n: return 115
-    # Eliminatorias
     if 'round of 16' in n or 'octav' in n: return 120
     if 'quarter' in n: return 130
     if 'semi' in n: return 140
     if 'third' in n or 'match for third' in n: return 150
     if n == 'final': return 160
     return 200
+
+def _nombre_fase_display(nombre: str, orden_bd: int, anyo: int) -> str:
+    """Para 1974/1978, renombra las fases de grupo para mostrarlas correctamente."""
+    if anyo not in DOBLE_FASE_GRUPOS:
+        return nombre
+    n = nombre.lower()
+    if n.startswith('group '):
+        letra = nombre.split(' ')[-1]
+        try:
+            int(letra)
+            return f'1ª Fase - {nombre}'
+        except ValueError:
+            return f'2ª Fase - {nombre}'
+    return nombre
 
 @router.get("/")
 async def lista_mundiales():
@@ -98,11 +113,10 @@ async def mundial_detalle(anyo: int):
         """, torneo['id'])
 
         # Ordenar fases correctamente
-        fases_ordenadas = sorted(fases, key=lambda f: _orden_fase(f['nombre']))
+        fases_ordenadas = sorted(fases, key=lambda f: _orden_fase(f['nombre'], f['orden'], anyo))
 
         fases_result = []
         for fase in fases_ordenadas:
-            # Saltar contenedores vacíos
             nombre_lower = fase['nombre'].lower()
             if nombre_lower in ('group stage', 'knockout stage', 'background'):
                 continue
@@ -127,15 +141,15 @@ async def mundial_detalle(anyo: int):
             if not partidos_list:
                 continue
 
-            orden_calculado = _orden_fase(fase['nombre'])
+            orden_calculado = _orden_fase(fase['nombre'], fase['orden'], anyo)
+            nombre_display = _nombre_fase_display(fase['nombre'], fase['orden'], anyo)
 
             fase_data = {
-                'nombre': fase['nombre'],
+                'nombre': nombre_display,
                 'orden': orden_calculado,
                 'partidos': partidos_list,
             }
 
-            # Clasificación para fases de grupo
             es_grupo = (
                 'group' in nombre_lower or
                 'pool' in nombre_lower or
