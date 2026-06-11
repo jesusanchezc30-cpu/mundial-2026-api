@@ -55,53 +55,66 @@ async def clear_cache():
     cache.clear()
     return {"status": "ok", "message": "Cache limpiada"}
 
+FOOTBALL_DATA_KEY = "442f1da323304a9894048f71534cb466"
+FOOTBALL_DATA_BASE = "https://api.football-data.org/v4"
+FOOTBALL_DATA_HEADERS = {"X-Auth-Token": FOOTBALL_DATA_KEY}
+
 @app.post("/admin/update-estados")
 async def update_estados():
-    """Consulta Sofascore y actualiza estado + marcador de partidos de hoy y ayer"""
+    """Consulta football-data.org y actualiza estado + marcador de partidos del Mundial 2026"""
+    from datetime import timedelta
     hoy = date.today()
     actualizados = 0
     errores = 0
 
-    async with get_conn() as conn:
-        rows = await conn.fetch("""
-            SELECT id, sofascore_id, estado
-            FROM partidos
-            WHERE sofascore_id IS NOT NULL
-            AND fecha_espana >= ($1::date - INTERVAL '1 day')::date
-            AND fecha_espana <= ($1::date + INTERVAL '1 day')::date
-            AND torneo_id = (SELECT id FROM torneos WHERE anyo = 2026)
-        """, hoy)
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{FOOTBALL_DATA_BASE}/competitions/2000/matches",
+                headers=FOOTBALL_DATA_HEADERS,
+                params={
+                    "dateFrom": str(hoy - timedelta(days=1)),
+                    "dateTo": str(hoy + timedelta(days=1)),
+                }
+            )
+        if resp.status_code != 200:
+            return {"status": "error", "code": resp.status_code}
 
-        for row in rows:
-            sofa_id = row['sofascore_id']
-            partido_id = row['id']
-            try:
-                async with httpx.AsyncClient(timeout=5) as client:
-                    resp = await client.get(
-                        f"{SOFA_BASE}/{sofa_id}",
-                        headers=SOFA_HEADERS
-                    )
-                if resp.status_code != 200:
-                    continue
+        matches = resp.json().get("matches", [])
 
-                event = resp.json().get("event", {})
-                status = event.get("status", {})
-                status_type = status.get("type", "")
-                status_desc = status.get("description", "")
+        async with get_conn() as conn:
+            for match in matches:
+                status = match.get("status", "")
+                score = match.get("score", {})
+                home_name = match.get("homeTeam", {}).get("name", "")
+                away_name = match.get("awayTeam", {}).get("name", "")
 
-                # Mapear estado Sofascore → nuestro estado
-                if status_type == "finished":
+                if status == "FINISHED":
                     nuevo_estado = "finalizado"
-                elif status_type == "inprogress":
+                elif status in ("IN_PLAY", "PAUSED", "HALFTIME"):
                     nuevo_estado = "en_juego"
-                elif status_type == "notstarted":
-                    nuevo_estado = "pendiente"
                 else:
                     nuevo_estado = "pendiente"
 
-                # Marcador
-                gl = event.get("homeScore", {}).get("current")
-                gv = event.get("awayScore", {}).get("current")
+                ft = score.get("fullTime", {})
+                ht = score.get("halfTime", {})
+                gl = ft.get("home") if ft.get("home") is not None else ht.get("home")
+                gv = ft.get("away") if ft.get("away") is not None else ht.get("away")
+
+                row = await conn.fetchrow("""
+                    SELECT p.id FROM partidos p
+                    JOIN selecciones sl ON sl.id = p.seleccion_local_id
+                    JOIN selecciones sv ON sv.id = p.seleccion_visitante_id
+                    JOIN torneos t ON t.id = p.torneo_id
+                    WHERE t.anyo = 2026
+                    AND (sl.nombre ILIKE $1 OR sl.nombre ILIKE $2)
+                    AND (sv.nombre ILIKE $3 OR sv.nombre ILIKE $4)
+                    LIMIT 1
+                """, home_name, f"%{home_name.split()[0]}%",
+                    away_name, f"%{away_name.split()[0]}%")
+
+                if not row:
+                    continue
 
                 await conn.execute("""
                     UPDATE partidos
@@ -109,12 +122,12 @@ async def update_estados():
                         goles_local = COALESCE($2, goles_local),
                         goles_visitante = COALESCE($3, goles_visitante)
                     WHERE id = $4
-                """, nuevo_estado, gl, gv, partido_id)
+                """, nuevo_estado, gl, gv, row['id'])
 
                 actualizados += 1
-            except Exception:
-                errores += 1
-                continue
+
+    except Exception as e:
+        errores += 1
 
     cache.clear()
     return {"status": "ok", "actualizados": actualizados, "errores": errores}
