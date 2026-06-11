@@ -80,7 +80,7 @@ async def clasificacion_grupo(letra: str):
         }
 
     for p in partidos:
-        if p["estado"] != "finalizado" or p["goles_local"] is None:
+        if p["estado"] not in ("finalizado", "en_juego") or p["goles_local"] is None:
             continue
         lid = p["seleccion_local_id"]
         vid = p["seleccion_visitante_id"]
